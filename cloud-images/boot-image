@@ -1,0 +1,108 @@
+#!/bin/bash
+
+set -euo pipefail
+
+function usage
+{
+    echo "
+
+Usage: $(basename "$0") [-D] image [cloud-init-image]
+
+This script is a wrapper around kvm (qemu-system-x86_64 -enable-kvm) that boots
+the specified image with reasonable settings and, if specified, attaches the
+cloud-init-image as cd-rom drive. Port 8022 in the host is forwarded to 22 in
+the VM.
+
+Options:
+
+    -D  Daemonize qemu after initializing
+    -H  Headless mode (no display)
+    -l  Log in to the VM after booting (implies -D)
+"
+}
+
+# Parse command-line options and arguments
+extra_kvm_opts=()
+while getopts ":DhHl" opt; do
+    case "${opt}" in
+        D)
+            extra_kvm_opts+=("--daemonize")
+            ;;
+        h)
+            usage
+            exit 0
+            ;;
+        H)
+            extra_kvm_opts+=("--display none")
+            ;;
+        l)
+            login=1
+            extra_kvm_opts+=("--daemonize")
+            ;;
+        \?)
+            echo "Invalid option: -${OPTARG}"
+            exit 1
+            ;;
+        :)
+            echo "Option -${OPTARG} requires an argument"
+            exit 1
+            ;;
+    esac
+done
+
+shift "$((OPTIND - 1))"
+
+image=${1:-}
+cloudinit=${2:-}
+
+if [ -z "${image}" ]; then
+    echo "ERROR: No image was specified"
+    usage
+    exit 1
+fi
+
+if ! [ -r "${image}" ]; then
+    echo "ERROR: Image file \"${image}\" is not accessible"
+    usage
+    exit 1
+fi
+
+if [ -n "${cloudinit}" ]; then
+    if ! [ -r "${cloudinit}" ]; then
+        echo "ERROR: Cloud-init image \"${cloudinit}\" is not accessible"
+        usage
+        exit 1
+    fi
+    extra_kvm_opts+=("-drive file=${cloudinit},index=1,media=cdrom")
+fi
+
+kvm_opts=(
+    -drive file=${image},index=0,media=disk
+    -m 2048
+    -net nic
+    -net user,hostfwd=tcp::8022-:22
+)
+
+if [ "${#extra_kvm_opts[@]}" -gt 0 ]; then
+    kvm_opts+=(${extra_kvm_opts[@]})
+fi
+
+kvm "${kvm_opts[@]}"
+
+if [ -n "${login:-}" ]; then
+    max_retries=60
+    retries=0
+    while ! ssh \
+                -o UserKnownHostsFile=/dev/null \
+                -o StrictHostKeyChecking=no \
+                -p 8022 \
+                localhost
+    do
+        if [ "${retries}" -gt "${max_retries}" ]; then
+            echo "ERROR: Cannot log in to the VM after ${max_retries} seconds"
+            break
+        fi
+        retries=$((retries + 1))
+        sleep 1
+    done
+fi

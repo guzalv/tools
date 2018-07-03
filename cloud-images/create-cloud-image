@@ -1,0 +1,131 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Creates a raw disk from a cloud image
+# Dependencies: cloud-utils genisoimage
+
+IMAGE_URL=http://cloud-images.ubuntu.com/releases/18.04/release/ubuntu-18.04-server-cloudimg-amd64.img
+IMAGE_STORAGE="${HOME}/image-storage"
+DOWNLOADED_IMAGE="${IMAGE_STORAGE}/$(basename ${IMAGE_URL})"
+
+DIR="$(dirname "$(readlink -f "$0")")"
+NOCLOUD_SCRIPT="${DIR}/create-nocloud-image.sh"
+
+function log
+{
+    >&2 echo "$@"
+}
+
+function usage
+{
+    log "Usage: $0 [-s <size>] [-p] <destination>"
+}
+
+function cleanup
+{
+    if [ -n "${prepare:-}" -a -f "${pidfile:-}" ]; then
+        if ps --pid "$(< "${pidfile}")" > /dev/null; then
+            kill "$(< "${pidfile}")"
+        fi
+        rm -f "${pidfile:-}"
+    fi
+}
+
+trap cleanup EXIT
+
+while getopts ":hi:ps:" opt; do
+    case "${opt}" in
+        h)
+            usage
+            exit 0
+            ;;
+        i)
+
+            IMAGE_URL="${OPTARG}"
+            DOWNLOADED_IMAGE="${IMAGE_STORAGE}/$(basename ${IMAGE_URL})"
+            ;;
+        p)
+            prepare="yes"
+            ;;
+        s)
+            size="${OPTARG}"
+            ;;
+        \?)
+            log "Invalid option: -${OPTARG}"
+            exit 1
+            ;;
+        :)
+            log "Option -${OPTARG} requires an argument"
+            exit 1
+            ;;
+    esac
+done
+
+shift "$((OPTIND - 1))"
+
+# Check if passed destination is valid
+destination="${1:-}"
+if [ -z ${destination} ]; then
+    usage
+    exit 1
+fi
+
+if ! touch "${destination}" 2> /dev/null; then
+    log "Error: can't write file \"${destination}\""
+    exit 1
+fi
+
+rm -rf "${destination}"
+
+mkdir --parents "${IMAGE_STORAGE}"
+
+# If we still don't have the image in the storage, download it
+if ! [ -r "${DOWNLOADED_IMAGE}" ]; then
+    wget "${IMAGE_URL}" -O "${DOWNLOADED_IMAGE}"
+fi
+
+# Convert to raw (and copy to destination)
+qemu-img convert -O raw "${DOWNLOADED_IMAGE}" "${destination}"
+
+# Resize if needed
+if [ -n "${size:-}" ]; then
+    qemu-img resize "${destination}" "${size}"
+fi
+
+# Prepare if needed. This boots the image attaching a cloud-init seed image
+# generated with "create-nocloud-image", and inmediately shuts it down
+if [ -n "${prepare:-}" ]; then
+    log "Preparing image"
+
+    if ! [ -f "${DIR}/create-nocloud-image" ] &> /dev/null; then
+        log "ERROR: create-nocloud-image required for preparing image"
+        exit 1
+    fi
+
+    additional_user_data="
+write_files:
+  - path: /etc/cloud/cloud.cfg.d/90_dpkg.cfg
+    content: \"datasource_list: [ None ]\"
+runcmd:
+  - [dpkg-reconfigure, -f, noninteractive, cloud-init]
+
+power_state:
+  mode: poweroff
+  message: Bye Bye
+  condition: True"
+
+    #"${DIR}/create-nocloud-image" -a "${additional_user_data}"
+
+    log "Running cloud-init in the VM"
+    kvm \
+        -drive file=${destination},index=0,media=disk \
+        -drive file="$("${DIR}/create-nocloud-image" \
+                            -a "${additional_user_data}")",index=1,media=cdrom \
+        -m 2048 \
+        -net nic \
+        -net user \
+        --display none
+fi
+
+log "Image successfully generated: ${destination}"

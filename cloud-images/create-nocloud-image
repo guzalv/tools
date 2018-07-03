@@ -1,0 +1,77 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Creates a cloud-init seed image with some basic settings
+
+function usage
+{
+    >&2 echo "Usage: $0 <destination>"
+}
+
+if ! which cloud-localds &> /dev/null; then
+    >&2 echo "ERROR: cloud-localds required for preparing image"
+    exit 1
+fi
+
+while getopts ":a:hH:" opt; do
+    case "${opt}" in
+        a)
+            additional_user_data="${OPTARG}"
+            ;;
+        h)
+            usage
+            exit 0
+            ;;
+        H)
+            hostname="${OPTARG}"
+            ;;
+        \?)
+            log "Invalid option: -${OPTARG}"
+            exit 1
+            ;;
+        :)
+            log "Option -${OPTARG} requires an argument"
+            exit 1
+            ;;
+    esac
+done
+
+shift "$((OPTIND - 1))"
+# Get destination, and try to provide a default in case the user is lazy
+destination="${1:-}"
+
+if [ -z "${destination}" ]; then
+    destination="$(mktemp -d)/cloud-init-seed.img"
+
+elif ! touch "${destination}" 2> /dev/null; then
+    >&2 echo "Error: can't write file \"${destination}\""
+    exit 1
+fi
+
+rm -rf "${destination}"
+
+# Build the file that will be inside the image
+cloud_init_data="
+#cloud-config
+ssh_pwauth: False
+users:
+  - name: ${USER}
+    ssh-authorized-keys:
+      - $(< ${HOME}/.ssh/id_rsa.pub)
+    sudo: 'ALL=(ALL) NOPASSWD:ALL'
+hostname: ${hostname:-${USER}-vm-${RANDOM}}
+${additional_user_data:-}
+"
+
+cloud_init_file=$(mktemp)
+echo "${cloud_init_data}" > "${cloud_init_file}"
+
+# Make the image
+cloud-localds "${destination}" "${cloud_init_file}"
+
+# Remove cloud-init file
+rm "${cloud_init_file}"
+
+>&2 echo "NoCloud image created to ${destination}"
+echo "${destination}"

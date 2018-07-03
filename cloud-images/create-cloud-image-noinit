@@ -1,0 +1,124 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Creates a raw disk from a ubuntu cloud image
+# Dependencies: cloud-utils genisoimage
+
+IMAGE_URL=http://cloud-images.ubuntu.com/releases/17.04/release/ubuntu-17.04-server-cloudimg-amd64.img
+IMAGE_STORAGE="${HOME}/image-storage"
+DOWNLOADED_IMAGE="${IMAGE_STORAGE}/$(basename ${IMAGE_URL})"
+
+DIR="$(dirname "$(readlink -f "$0")")"
+MOUNTPOINT="${DIR}/mountpoint"
+
+function log
+{
+    >&2 echo "$@"
+}
+
+function usage
+{
+    log "Usage: $0 [-s <size>] [-p] <destination>"
+}
+
+function cleanup
+{
+    log "Cleaning up"
+    sync
+    sudo umount "${MOUNTPOINT}" || true
+    if [ -n "${loopback_device:-}" ]; then
+        sudo losetup -d "${loopback_device}" || true
+    fi
+    rm --recursive --force "${MOUNTPOINT}"
+}
+
+trap cleanup EXIT
+
+while getopts ":hps:" opt; do
+    case "${opt}" in
+        h)
+            usage
+            exit 0
+            ;;
+        p)
+            prepare="yes"
+            ;;
+        s)
+            size="${OPTARG}"
+            ;;
+        \?)
+            log "Invalid option: -${OPTARG}"
+            exit 1
+            ;;
+        :)
+            log "Option -${OPTARG} requires an argument"
+            exit 1
+            ;;
+    esac
+done
+
+shift "$((OPTIND - 1))"
+
+# Check if passed destination is valid
+destination="${1:-}"
+if [ -z ${destination} ]; then
+    usage
+    exit 1
+fi
+
+if ! touch "${destination}" 2> /dev/null; then
+    log "Error: can't write file \"${destination}\""
+    exit 1
+fi
+
+rm -rf "${destination}"
+
+mkdir --parents "${IMAGE_STORAGE}"
+
+# If we still don't have the image in the storage, download it
+if ! [ -r "${DOWNLOADED_IMAGE}" ]; then
+    wget "${IMAGE_URL}" -O "${DOWNLOADED_IMAGE}"
+fi
+
+# Convert to raw (and copy to destination)
+qemu-img convert -O raw "${DOWNLOADED_IMAGE}" "${destination}"
+
+# Resize if needed
+if [ -n "${size:-}" ]; then
+    qemu-img resize "${destination}" "${size}"
+fi
+
+# Prepare if needed. This boots the image attaching a cloud-init seed image
+# generated with "create-nocloud-image.sh", and inmediately shuts it down
+if [ -n "${prepare:-}" ]; then
+    log "Preparing image"
+    loopback_device=$(losetup -f)
+    sudo losetup --partscan "${loopback_device}" "${destination}"
+
+    rm --recursive --force "${MOUNTPOINT}"
+    mkdir "${MOUNTPOINT}"
+
+    sudo mount "${loopback_device}p1" "${MOUNTPOINT}"
+
+    # Disable cloud-init
+    sudo chroot "${MOUNTPOINT}" systemctl mask cloud-config.service
+    sudo chroot "${MOUNTPOINT}" systemctl mask cloud-final.service
+
+    # Create user
+    sudo chroot "${MOUNTPOINT}" addgroup  --gid $(id -g) "${USER}"
+    sudo chroot "${MOUNTPOINT}" adduser \
+        --disabled-password \
+        --gecos "" \
+        --gid $(id -g) \
+        --quiet \
+        --uid $(id -u) \
+        "$USER"
+    sudo chroot "${MOUNTPOINT}" usermod -G sudo "${USER}"
+    sudo chroot --userspec "$(id -u):$(id -g)" "${MOUNTPOINT}" mkdir \
+        "/home/${USER}/.ssh"
+    sudo cat - >> "${MOUNTPOINT}/home/${USER}/.ssh/authorized_keys" <<< $(< "${HOME}/.ssh/id_rsa.pub")
+    sudo chown "$(id -u):$(id -g)" "${MOUNTPOINT}/home/${USER}/.ssh/authorized_keys"
+fi
+
+log "Image successfully generated: ${destination}"
