@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+PROFILE_DIR="~/.mozilla/firefox"
+PROFILE_NAME="private-${RANDOM}"
+
+function cleanup
+{
+    local profile_data
+
+    rm -rf "${PROFILE_DIR}"/*"${PROFILE_NAME}"
+    echo "Cleaned up profile ${PROFILE_NAME} at ${PROFILE_DIR}"
+}
+
+# Create profile
+firefox --no-remote -CreateProfile "${PROFILE_NAME}"
+
+trap cleanup EXIT
+
+firefox -p "${PROFILE_NAME}"
