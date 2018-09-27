@@ -1,0 +1,25 @@
+#!/bin/bash
+
+set -euo pipefail
+
+name=${1:-}
+
+if [ -z "${name}" ]; then
+    >&2 echo "ERROR: No filename given"
+    exit 1
+fi
+
+results=$(find . -name "${name}")
+
+# Number of results equals the number of lines in find output. If $results is
+# empty, when echoing it a new line will be added, which we need to remove as
+# it's not a valid file
+number_of_files=$(echo "${results}" | grep -v '^$' | wc -l)
+
+# If we have only one file, open it in vim
+if [ "${number_of_files}" -eq 1 ]; then
+    exec "${EDITOR:-vim}" "${results}"
+fi
+
+# Otherwise just print the filenames
+echo "${results}"
