@@ -18,4 +18,4 @@ firefox --no-remote -CreateProfile "${PROFILE_NAME}"
 
 trap cleanup EXIT
 
-firefox -p "${PROFILE_NAME}"
+firefox --private-window -p "${PROFILE_NAME}"
