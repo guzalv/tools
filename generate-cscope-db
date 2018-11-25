@@ -1,0 +1,28 @@
+#!/bin/bash
+
+set -euo pipefail
+
+if [ "$#" -lt 2 ]; then
+    echo "Usage: $0 <project topdir> <cscope db destination>"
+    exit 1
+fi
+
+project_topdir=$(readlink -f $1)
+destination=$2
+
+pushd "${destination}"
+
+# Generate file list
+find "${project_topdir}" \
+    -name '*.c' -o \
+    -name '*.h' -o \
+    -name '*.cpp' -o \
+    -name '*.cc' -o \
+    -name '*.hh' -o \
+    -name '*.java' > "cscope.files"
+
+cscope -bq
+
+rm cscope.files
+
+popd
