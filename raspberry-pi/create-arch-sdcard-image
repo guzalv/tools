@@ -1,0 +1,343 @@
+#!/bin/bash
+
+# This script simply automates
+# https://archlinuxarm.org/platforms/armv8/broadcom/raspberry-pi-3, adapting it
+# to generate an image instead of writing directly to a device
+
+set -euo pipefail
+
+DIR=$(readlink -f "$(dirname "$0")")
+
+ARCH_URL=http://os.archlinuxarm.org/os/ArchLinuxARM-rpi-2-latest.tar.gz
+IMAGE_CACHE=${HOME}/image-storage
+MOUNT_POINTS_DIR=$(mktemp --directory --tmpdir raspberry-pi-arch.XXXXXX)
+PI_USER_DEFAULT=alarm
+SIZE_DEFAULT=6G
+
+function cleanup
+{
+    local image=$1
+
+    log "Cleaning up"
+
+    fix_ownership "${image}"
+
+    # Unmount partitions. Allow failures as it's possible that one or both
+    # partitions are not mounted
+    umount "${MOUNT_POINTS_DIR}"/* || true
+    rm -rf "${MOUNT_POINTS_DIR}"
+
+    # Detach loop device. Also possible that it is not attached yet
+    losetup -d "$(get_associated_loop_device "${dest}")" || true
+}
+
+function create_empty_image
+{
+    local dest=$1
+    local size=$2
+
+    log "Creating empty image with boot and root partitions"
+
+    rm --force "${dest}"
+    fallocate -l "${size}" "${dest}"
+
+    # Create a 100 MB boot partition at the beginning and allocate the rest for
+    # the root filesystem. See link at the beginning of this file for details
+    echo "
+p
+n
+p
+1
+
++100M
+t
+c
+n
+p
+2
+
+
+w" | fdisk "${dest}" &> /dev/null
+}
+
+function create_filesystems
+{
+    local dest=$1
+
+    log "Creating filesystems inside the disk image"
+
+    loopdev=$(get_associated_loop_device "${dest}")
+
+    mkfs.vfat "${loopdev}p1" &> /dev/null
+    mkfs.ext4 "${loopdev}p2" &> /dev/null
+}
+
+function download_arch
+{
+    local file_name
+    local url=$1
+    local dest_dir=$2
+
+    log "Fetching Arch cloud image: ${url}"
+
+    file_name=${url##*/}
+    dest_path=${dest_dir}/${file_name}
+    if ! [ -r "${dest_path}" ]; then
+        if ! [ -d "${dest_dir}" ]; then
+            mkdir --parents "${dest_dir}"
+            fix_ownership "${dest_dir}"
+        fi
+        wget "--directory-prefix=${dest_dir}" "${url}"
+        fix_ownership "${dest_path}"
+    fi
+    echo "${dest_path}"
+}
+
+function fix_ownership
+{
+    # Give back the ownership of the specified file/directory to the user who
+    # called this script. Normally this is called via sudo, so the user's id is
+    # available via ${SUDO_UID}. If root is running the program directly
+    # (${SUDO_UID} is unset) then there is nothing to do.
+    local path=$1
+
+    if [ -n "${SUDO_UID}" ]; then
+        chown --recursive ${SUDO_UID} "${path}"
+    fi
+}
+
+function get_associated_loop_device
+{
+    local image=$1
+
+    losetup -j "${image}" | cut -d ":" -f 1
+}
+
+function install_arch
+{
+    local tarfile=$1
+    local mount_point_boot=${MOUNT_POINTS_DIR}/boot
+    local mount_point_root=${MOUNT_POINTS_DIR}/root
+
+    log "Extracting Arch cloud image"
+    tar -xpf "${tarfile}" -C "${mount_point_root}" 2> /dev/null
+    mv "${mount_point_root}"/boot/* "${mount_point_boot}"
+}
+
+function log
+{
+    echo >&2 "$@"
+}
+
+function mount_image
+{
+    local loop_dev
+    local image=$1
+    local mount_point_boot=${MOUNT_POINTS_DIR}/boot
+    local mount_point_root=${MOUNT_POINTS_DIR}/root
+
+    loop_dev=$(get_associated_loop_device "${image}")
+
+    mkdir -p "${mount_point_boot}" "${mount_point_root}"
+    mount "${loop_dev}p1" "${mount_point_boot}"
+    mount "${loop_dev}p2" "${mount_point_root}"
+}
+
+function set_hostname
+{
+    local mount_point_root=${MOUNT_POINTS_DIR}/root
+    local hostname=$1
+
+    log "Setting hostname to ${hostname}"
+
+    echo "${hostname}" > "${mount_point_root}/etc/hostname"
+}
+
+function setup_loop_devices
+{
+    local image=$1
+
+    # Find the first free loop device and associate the image
+    losetup --find --partscan "${image}"
+}
+
+function setup_public_key_auth
+{
+    local mount_point_root=${MOUNT_POINTS_DIR}/root
+    local public_key=$1
+
+    log "Copying public key and removing passwords"
+
+    mkdir --parents "${mount_point_root}/root/.ssh"
+    mkdir --parents "${mount_point_root}/home/${PI_USER_DEFAULT}/.ssh"
+
+    cat "${public_key}" >> "${mount_point_root}/root/.ssh/authorized_keys"
+    cat "${public_key}" \
+        >> "${mount_point_root}/home/${PI_USER_DEFAULT}/.ssh/authorized_keys"
+
+    perl -pi -e "s|root:(.*?):|root:!:|g" "${mount_point_root}/etc/shadow"
+    perl -pi -e "s|${PI_USER_DEFAULT}:(.*?):|${PI_USER_DEFAULT}:!:|g" \
+        "${mount_point_root}/etc/shadow"
+}
+
+function setup_wifi
+{
+    # Adapted from https://ladvien.com/installing-arch-linux-raspberry-pi-zero-w
+    local mount_point_root=${MOUNT_POINTS_DIR}/root
+    local wifi_ssid=$1
+    local wifi_pass=$2
+
+    log "Setting up Wi-Fi connection"
+
+    # Configure systemd-networkd
+    cat >> "${mount_point_root}/etc/systemd/network/wlan0.network" << EOF
+[Match]
+Name=wlan0
+
+[Network]
+DHCP=yes
+EOF
+
+    # Configure wpa_supplicant according to provided ssid/[pass]
+    if [ -z "${wifi_pass}" ]; then
+        supplicant_conf="\
+network={
+    ssid=\"${wifi_ssid}\"
+    key_mgmt=NONE
+}"
+    else
+        if [ "${wifi_pass}" = "-" ]; then
+            read -s -r -p "Wi-Fi password: " wifi_pass
+            echo
+        fi
+        supplicant_conf=$(wpa_passphrase "${wifi_ssid}" "${wifi_pass}")
+    fi
+    echo "${supplicant_conf}" \
+        > "${mount_point_root}/etc/wpa_supplicant/wpa_supplicant-wlan0.conf"
+
+    # Enable wpa_supplicant systemd service for wlan0
+    local target_dir
+    target_dir="${mount_point_root}/etc/systemd/system/multi-user.target.wants"
+    ln -s \
+        /usr/lib/systemd/system/wpa_supplicant@.service \
+       "${target_dir}/wpa_supplicant@wlan0.service"
+}
+
+function usage
+{
+    log "
+Usage:
+
+$0 [-h] [-H hostname] [-k public_key] [-p wifi_pass] [-s size] [-w wifi_ssid] destination
+
+Mandatory arguments:
+    destination:
+        Path where to place the resulting image, which must be writable.
+
+Options
+    -h, --help
+        Show this help.
+    -H, --hostname
+        Set the specified hostname. If unset, the default is left untouched.
+    -k public_key, --public-key=public_key
+        Add the specified public key to authorized_keys of both root and the
+        default user (${PI_USER_DEFAULT}), and remove any passwords. If
+        omitted, the default configuration is preserved.
+    -p password, --wifi-pass=password
+        Use the specified password to connect to the Wi-Fi network. If \"-w\"
+        is passed but password is not, a connection without authentication is
+        set up. If \"password\" is \"-\", the actual password will be asked
+        interactively.
+    -s size, --size=size
+        How big the whole image should be. The format of \"size\" is the same
+        as accepted by \"fallocate\" (see \"man 1 fallocate\").  Defaults to
+        ${SIZE_DEFAULT}.
+    -w ssid, --wifi-ssid=ssid
+        Configure the system to automatically connect to \"ssid\" Wi-Fi network
+        at startup. If a password is required, it can be provided with \"-p\"
+        (see above)."
+}
+
+if ! options=$(getopt \
+                --options "hH:k:p:s:w:" \
+                --longoptions \
+                    "help,hostname,public-key:,size:,wifi-pass:,wifi-ssid:" \
+                --name "$0" \
+                -- \
+                "$@"); then
+    usage
+    exit 1
+fi
+
+eval set -- "${options}"
+
+while true; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -H|--hostname)
+            hostname=$2
+            shift 2
+            ;;
+        -k|--public-key)
+            public_key=$2
+            shift 2
+            ;;
+        -p|--wifi-pass)
+            wifi_pass=$2
+            shift 2
+            ;;
+        -s|--size)
+            size=$2
+            shift 2 ;;
+        -w|--wifi-ssid)
+            wifi_ssid=$2
+            shift 2
+            ;;
+        --)
+            shift
+            break
+            ;;
+    esac
+done
+
+# Sanity checks
+if [ "${EUID}" != 0 ]; then
+    log "Error: you must be root"
+    exit 1
+fi
+
+dest=${1:-}
+if [ -z "${dest}" ]; then
+    log "Error: Destination missing"
+    usage
+    exit 1
+fi
+if ! touch "${dest}" &> /dev/null; then
+    log "Error: cannot write to destination file: $(pwd)/${dest}"
+    usage
+    exit 1
+fi
+
+# Whenever the script exits, regardless of the reason, the cleanup function
+# will be run
+trap "cleanup ${dest}" EXIT
+
+# "Main function"
+create_empty_image "${dest}" "${size:-${SIZE_DEFAULT}}"
+setup_loop_devices "${dest}"
+create_filesystems "${dest}"
+mount_image "${dest}"
+arch_tarfile=$(download_arch "${ARCH_URL}" "${IMAGE_CACHE}")
+install_arch "${arch_tarfile}"
+if [ -n "${wifi_ssid:-}" ]; then
+    setup_wifi "${wifi_ssid}" "${wifi_pass:-}"
+fi
+if [ -n "${hostname:-}" ]; then
+    set_hostname "${hostname}"
+fi
+if [ -n "${public_key:-}" ]; then
+    setup_public_key_auth "${public_key:-}"
+fi
