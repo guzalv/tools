@@ -34,8 +34,11 @@ function cleanup
 
 trap cleanup EXIT
 
-while getopts ":hi:ps:" opt; do
+while getopts ":a:hi:ps:" opt; do
     case "${opt}" in
+        a)
+            additional_user_data="${OPTARG}"
+            ;;
         h)
             usage
             exit 0
@@ -103,7 +106,7 @@ if [ -n "${prepare:-}" ]; then
         exit 1
     fi
 
-    additional_user_data="
+    additional_user_data="${additional_user_data:-}
 write_files:
   - path: /etc/cloud/cloud.cfg.d/90_dpkg.cfg
     content: \"datasource_list: [ None ]\"
