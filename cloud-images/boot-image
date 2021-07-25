@@ -22,22 +22,22 @@ Options:
 }
 
 # Parse command-line options and arguments
-extra_kvm_opts=()
+extra_qemu_opts=()
 while getopts ":DhHl" opt; do
     case "${opt}" in
         D)
-            extra_kvm_opts+=("--daemonize")
+            extra_qemu_opts+=("--daemonize")
             ;;
         h)
             usage
             exit 0
             ;;
         H)
-            extra_kvm_opts+=("--display none")
+            extra_qemu_opts+=("--display none")
             ;;
         l)
             login=1
-            extra_kvm_opts+=("--daemonize")
+            extra_qemu_opts+=("-daemonize")
             ;;
         \?)
             echo "Invalid option: -${OPTARG}"
@@ -73,21 +73,27 @@ if [ -n "${cloudinit}" ]; then
         usage
         exit 1
     fi
-    extra_kvm_opts+=("-drive file=${cloudinit},index=1,media=cdrom")
+    extra_qemu_opts+=("-drive file=${cloudinit},index=1,media=cdrom")
 fi
 
-kvm_opts=(
+qemu_opts=(
     -drive file=${image},index=0,media=disk
     -m 2048
     -net nic
     -net user,hostfwd=tcp::8022-:22
 )
 
-if [ "${#extra_kvm_opts[@]}" -gt 0 ]; then
-    kvm_opts+=(${extra_kvm_opts[@]})
+if [ "${#extra_qemu_opts[@]}" -gt 0 ]; then
+    qemu_opts+=(${extra_qemu_opts[@]})
 fi
 
-kvm "${kvm_opts[@]}"
+if [ "$(uname)" = "Darwin" ]; then
+    qemu_opts+=(-accel hvf)
+else
+    qemu_opts+=(-enable-kvm)
+fi
+
+qemu-system-x86_64 "${qemu_opts[@]}"
 
 if [ -n "${login:-}" ]; then
     max_retries=60
