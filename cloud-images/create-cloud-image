@@ -69,7 +69,7 @@ shift "$((OPTIND - 1))"
 
 # Check if passed destination is valid
 destination="${1:-}"
-if [ -z ${destination} ]; then
+if [ -z "${destination}" ]; then
     usage
     exit 1
 fi
