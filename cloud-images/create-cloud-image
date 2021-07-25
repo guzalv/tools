@@ -5,7 +5,7 @@ set -euo pipefail
 # Creates a raw disk from a cloud image
 # Dependencies: cloud-utils genisoimage
 
-IMAGE_URL=http://cloud-images.ubuntu.com/releases/18.04/release/ubuntu-18.04-server-cloudimg-amd64.img
+IMAGE_URL=http://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
 IMAGE_STORAGE="${HOME}/image-storage"
 DOWNLOADED_IMAGE="${IMAGE_STORAGE}/$(basename ${IMAGE_URL})"
 
