@@ -118,17 +118,10 @@ power_state:
   message: Bye Bye
   condition: True"
 
-    #"${DIR}/create-nocloud-image" -a "${additional_user_data}"
+    seed_img=$("${DIR}/create-nocloud-image" -a "${additional_user_data}")
 
     log "Running cloud-init in the VM"
-    kvm \
-        -drive file=${destination},index=0,media=disk \
-        -drive file="$("${DIR}/create-nocloud-image" \
-                            -a "${additional_user_data}")",index=1,media=cdrom \
-        -m 2048 \
-        -net nic \
-        -net user \
-        --display none
+    "${DIR}/boot-image"  "${destination}" "${seed_img}"
 fi
 
 log "Image successfully generated: ${destination}"
