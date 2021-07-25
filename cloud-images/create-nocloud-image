@@ -8,10 +8,6 @@ function usage
 {
     >&2 echo "Usage: $0 <destination>
 
-if ! which cloud-localds &> /dev/null; then
-    >&2 echo "ERROR: cloud-localds required for preparing image"
-    exit 1
-fi
 Options:
 
   -a user-data
@@ -67,7 +63,6 @@ fi
 
 rm -rf "${destination}"
 
-
 # Sanitize public key
 public_key=${public_key:-"$(ls ~/.ssh/*.pub 2> /dev/null | head -n1 || true)"}
 
@@ -94,14 +89,23 @@ hostname: ${hostname:-${USER}-vm-${RANDOM}}
 ${additional_user_data:-}
 "
 
-cloud_init_file=$(mktemp)
-echo "${cloud_init_data}" > "${cloud_init_file}"
-
 # Make the image
-cloud-localds "${destination}" "${cloud_init_file}"
-
-# Remove cloud-init file
-rm "${cloud_init_file}"
+if command -v cloud-localds &> /dev/null; then
+    cloud_init_file=$(mktemp)
+    echo "${cloud_init_data}" > "${cloud_init_file}"
+    cloud-localds "${destination}" "${cloud_init_file}"
+    rm "${cloud_init_file}"
+elif command -v mkisofs &> /dev/null; then
+    mkiso_dir=$(mktemp -d)
+    echo "${cloud_init_data}" > "${mkiso_dir}/user-data"
+    touch "${mkiso_dir}/meta-data"
+    mkisofs -o "${destination}" -volid cidata -joliet -rock "${mkiso_dir}"
+    rm -rf "${mkiso_dir}"
+else
+    >&2 echo "ERROR: cloud-localds (apt install cloud-image-utils) or mkisofs \
+(brew install cdrtools) required for generating NoCloud image"
+    exit 1
+fi
 
 >&2 echo "NoCloud image created to ${destination}"
 echo "${destination}"
