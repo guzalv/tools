@@ -14,7 +14,7 @@ if ! which cloud-localds &> /dev/null; then
     exit 1
 fi
 
-while getopts ":a:hH:" opt; do
+while getopts ":a:hi:H:" opt; do
     case "${opt}" in
         a)
             additional_user_data="${OPTARG}"
@@ -25,6 +25,9 @@ while getopts ":a:hH:" opt; do
             ;;
         H)
             hostname="${OPTARG}"
+            ;;
+        i)
+            public_key="${OPTARG}"
             ;;
         \?)
             log "Invalid option: -${OPTARG}"
@@ -38,6 +41,7 @@ while getopts ":a:hH:" opt; do
 done
 
 shift "$((OPTIND - 1))"
+
 # Get destination, and try to provide a default in case the user is lazy
 destination="${1:-}"
 
@@ -51,6 +55,20 @@ fi
 
 rm -rf "${destination}"
 
+
+# Sanitize public key
+public_key=${public_key:-"$(ls ~/.ssh/*.pub 2> /dev/null | head -n1 || true)"}
+
+if [ -z "${public_key}" ]; then
+    >&2 echo "Error: public key not specified and no key found at default location"
+    usage
+    exit 1
+fi
+if ! [ -r "${public_key}" ]; then
+    >&2 echo "Error: public key ${public_key} can't be read"
+    exit 1
+fi
+
 # Build the file that will be inside the image
 cloud_init_data="
 #cloud-config
@@ -58,7 +76,7 @@ ssh_pwauth: False
 users:
   - name: ${USER}
     ssh-authorized-keys:
-      - $(< ${HOME}/.ssh/id_rsa.pub)
+      - $(< "${public_key}")
     sudo: 'ALL=(ALL) NOPASSWD:ALL'
 hostname: ${hostname:-${USER}-vm-${RANDOM}}
 ${additional_user_data:-}
