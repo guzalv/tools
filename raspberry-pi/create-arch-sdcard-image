@@ -258,6 +258,16 @@ Options
         (see above)."
 }
 
+# Preliminary sanity checks
+if [ "$(uname)" = "Darwin" ]; then
+    log "Error: MacOS is not supported, use Linux or a Linux Virtual Machine"
+    exit 1
+fi
+if [ "${EUID}" != 0 ]; then
+    log "Error: you must be root"
+    exit 1
+fi
+
 if ! options=$(getopt \
                 --options "hH:k:p:s:w:" \
                 --longoptions \
@@ -302,12 +312,6 @@ while true; do
             ;;
     esac
 done
-
-# Sanity checks
-if [ "${EUID}" != 0 ]; then
-    log "Error: you must be root"
-    exit 1
-fi
 
 dest=${1:-}
 if [ -z "${dest}" ]; then
