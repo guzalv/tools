@@ -6,13 +6,25 @@ set -euo pipefail
 
 function usage
 {
-    >&2 echo "Usage: $0 <destination>"
-}
+    >&2 echo "Usage: $0 <destination>
 
 if ! which cloud-localds &> /dev/null; then
     >&2 echo "ERROR: cloud-localds required for preparing image"
     exit 1
 fi
+Options:
+
+  -a user-data
+        Additional user data to be added, besides the default
+
+  -h
+        Show this message
+  -H hostname
+        Set custom hostname instead of an auto-generated string
+  -i public-key
+        Use specified public key, instead of the default
+    "
+}
 
 while getopts ":a:hi:H:" opt; do
     case "${opt}" in
